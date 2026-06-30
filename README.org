@@ -31,8 +31,6 @@ This will create a shared library file in the =target/release= directory.
 
 To use this module and override the default =org-roam-db-sync=, you need to load the compiled library and advise the original function.
 
-Add the following to your =init.org= (inside a =#+begin_src emacs-lisp= block) or your =init.el=:
-
 #+begin_src emacs-lisp
 ;; 1. Point load-path to the directory containing the compiled module
 (add-to-list 'load-path (expand-file-name "~/workspace/org-roam-sync-rs/target/release"))
