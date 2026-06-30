@@ -1,0 +1,57 @@
+#+TITLE: org-roam-sync-rs
+#+AUTHOR: Sukbeom Kim
+
+=org-roam-sync-rs= is an ultra-fast, multithreaded native Emacs module written in Rust that serves as a drop-in replacement for =org-roam-db-sync=. By utilizing =rayon= for concurrency, =rusqlite= for SQLite database operations, and =org-rs= for AST parsing, it drastically reduces the time required to sync your Org-roam database.
+
+* Features
+- *Lightning Fast:* Parses multiple Org files concurrently using Rust's =rayon=.
+- *Native Integration:* Loaded directly into Emacs as a dynamic module (=cdylib=).
+- *Seamless Override:* Easily replaces the default =org-roam-db-sync= without breaking your existing Org-roam workflow.
+
+* Prerequisites
+- Rust toolchain (=cargo=)
+- Emacs compiled with dynamic module support (check if =module-file-suffix= is non-nil).
+
+* Building
+
+Clone the repository and build the project in release mode:
+
+#+begin_src bash
+git clone https://github.com/seokbeomKim/org-roam-sync-rs
+cd org-roam-sync-rs
+cargo build --release
+#+end_src
+
+This will create a shared library file in the =target/release= directory. 
+- On Linux: =liborg_roam_sync_rs.so=
+- On macOS: =liborg_roam_sync_rs.dylib=
+- On Windows: =org_roam_sync_rs.dll=
+
+* Configuration (=init.org= / =init.el=)
+
+To use this module and override the default =org-roam-db-sync=, you need to load the compiled library and advise the original function.
+
+Add the following to your =init.org= (inside a =#+begin_src emacs-lisp= block) or your =init.el=:
+
+#+begin_src emacs-lisp
+;; 1. Point load-path to the directory containing the compiled module
+(add-to-list 'load-path (expand-file-name "~/workspace/org-roam-sync-rs/target/release"))
+
+;; 2. Load the dynamic module. 
+;; Note: You must specify the exact filename since `require` typically looks for `.el` or `.so` without the `lib` prefix.
+;; Adjust the extension (.so, .dylib, .dll) based on your OS.
+(module-load (locate-file "liborg_roam_sync_rs.so" load-path '("" ".so" ".dylib" ".dll")))
+
+;; 3. Define an override function
+(defun my-org-roam-db-sync-rs-override (&optional force)
+  "Override `org-roam-db-sync' to use the blazing fast Rust implementation."
+  (interactive "P")
+  ;; The rust module exposes `org-roam-sync-rs-sync-db`
+  ;; It expects 3 arguments: roam_dir, db_path, and a boolean for force.
+  (org-roam-sync-rs-sync-db org-roam-directory org-roam-db-location force))
+
+;; 4. Advise the original `org-roam-db-sync` to use our custom override
+(advice-add 'org-roam-db-sync :override #'my-org-roam-db-sync-rs-override)
+#+end_src
+
+
