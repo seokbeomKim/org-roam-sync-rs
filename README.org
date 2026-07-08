@@ -29,27 +29,63 @@ This will create a shared library file in the =target/release= directory.
 
 * Configuration (=init.org= / =init.el=)
 
-To use this module and override the default =org-roam-db-sync=, you need to load the compiled library and advise the original function.
+To use this module and override the default =org-roam-db-sync=, load the compiled library inside your =org-roam= =use-package= =:config= block and advise the original function.
+
+The configuration below mirrors the real setup used in the author's =init.org=. It guards the module load with =file-exists-p= and =fboundp= checks, wraps the override in =with-eval-after-load=, closes and reopens the DB after sync, runs =org-roam-db-sync-hook=, and adds a prebuild advice on =org-roam-db-autosync-mode= to handle the native-compiled bypass path.
 
 #+begin_src emacs-lisp
-;; 1. Point load-path to the directory containing the compiled module
-(add-to-list 'load-path (expand-file-name "~/workspace/org-roam-sync-rs/target/release"))
+  ;; 1. Point load-path to the directory containing the compiled module
+  (add-to-list 'load-path (expand-file-name "~/workspace/org-roam-sync-rs/target/release"))
 
-;; 2. Load the dynamic module. 
-;; Note: You must specify the exact filename since `require` typically looks for `.el` or `.so` without the `lib` prefix.
-;; Adjust the extension (.so, .dylib, .dll) based on your OS.
-(module-load (locate-file "liborg_roam_sync_rs.so" load-path '("" ".so" ".dylib" ".dll")))
+  ;; 2. Load the dynamic module.
+  ;; Note: You must specify the exact filename since `require` typically
+  ;; looks for `.el` or `.so` without the `lib` prefix.  Adjust the
+  ;; extension (.so, .dylib, .dll) based on your OS.
+  (module-load (locate-file "liborg_roam_sync_rs.so" load-path '("" ".so" ".dylib" ".dll")))
 
-;; 3. Define an override function
-(defun my-org-roam-db-sync-rs-override (&optional force)
-  "Override `org-roam-db-sync' to use the blazing fast Rust implementation."
-  (interactive "P")
-  ;; The rust module exposes `org-roam-sync-rs-sync-db`
-  ;; It expects 3 arguments: roam_dir, db_path, and a boolean for force.
-  (org-roam-sync-rs-sync-db org-roam-directory org-roam-db-location force))
+  ;; Load high-performance Rust module for org-roam-db-sync
+  (when (fboundp 'org-roam-sync-rs-sync-db)
+    (with-eval-after-load 'org-roam
+      (defun my-org-roam-db-sync-override (&optional force)
+        "Override org-roam-db-sync with the high-performance Rust module."
+        (interactive "P")
+        (let ((roam-dir (expand-file-name org-roam-directory))
+              (db-path  (expand-file-name org-roam-db-location))
+              (is-force (and force t)))
+          (org-roam-sync-rs-sync-db roam-dir db-path is-force)
+          (org-roam-db--close)
+          (org-roam-db)
+          (run-hooks 'org-roam-db-sync-hook)))
+      (advice-add 'org-roam-db-sync :override #'my-org-roam-db-sync-override)
 
-;; 4. Advise the original `org-roam-db-sync` to use our custom override
-(advice-add 'org-roam-db-sync :override #'my-org-roam-db-sync-rs-override)
+      ;; The :override above only catches calls that go *through the symbol*
+      ;; (interactive `M-x org-roam-db-sync', `C-u ...').  org-roam-db is
+      ;; native-compiled, so `org-roam-db-autosync-mode' enabling itself
+      ;; calls `org-roam-db-sync' via an intra-unit direct reference that
+      ;; bypasses advice entirely -- running the slow elisp rebuild.  That
+      ;; is the path hit by profile switching.  So build with Rust *before*
+      ;; autosync is enabled; the mode's own elisp sync then sees an
+      ;; up-to-date DB (identical SHA1 hashes) and does nothing.
+      (defun my-org-roam-db-rust-prebuild-a (&optional arg &rest _)
+        "Rebuild the org-roam DB with Rust before autosync-mode turns on."
+        (let ((turning-on (cond ((memq arg '(nil toggle))
+                                 (not (bound-and-true-p org-roam-db-autosync-mode)))
+                                (t (> (prefix-numeric-value arg) 0)))))
+          (when (and turning-on (fboundp 'org-roam-sync-rs-sync-db))
+            (org-roam-sync-rs-sync-db (expand-file-name org-roam-directory)
+                                      (expand-file-name org-roam-db-location)
+                                      nil))))
+      (advice-add 'org-roam-db-autosync-mode :before
+                  #'my-org-roam-db-rust-prebuild-a)))
+
+  (org-roam-db-autosync-mode)
 #+end_src
+
+** Notes
+
+- Adjust =rs-module= path to point to your built =liborg_roam_sync_rs.so= (or =.dylib= / =.dll= on macOS / Windows).
+- The =force= argument is converted to a strict boolean with =(and force t)= because the Rust FFI expects a =bool=, not a raw prefix argument (=nil=, =4=, =(4)=, ...).
+- =org-roam-db--close= and =org-roam-db= are called after the Rust sync so that the running Emacs process picks up the updated SQLite file.
+- The prebuild advice on =org-roam-db-autosync-mode= is necessary because native-compiled =org-roam-db= calls =org-roam-db-sync= via an intra-unit direct reference that bypasses =advice-add=.
 
 
